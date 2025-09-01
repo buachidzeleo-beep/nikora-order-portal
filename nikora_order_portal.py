@@ -1,16 +1,16 @@
-
 import io
 import re
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Order → ERP Automation (Free) — Option A", layout="wide")
-st.title("Order → ERP Automation (Free) — Option A")
-st.caption("Incoming order files stay **unchanged**. All adaptation is on our side for ERP upload and analytics.")
+st.set_page_config(page_title="ნიკორას რეგულარული შეკვეთა")
+st.title("ნიკორას რეგულარული შეკვეთა")
+st.caption("ნიკორას შეკვეთა მარტო არის ასატვირთი")
 
 # ----------------------------- Defaults -----------------------------
 BASE_DIR = Path(__file__).parent
@@ -19,8 +19,13 @@ DEFAULT_BARCODE = CONFIG_DIR / "barcode_map.xlsx"
 DEFAULT_SCHEDULE = CONFIG_DIR / "shop_schedule.xlsx"
 DEFAULT_TBILISI_PLANTS = CONFIG_DIR / "tbilisi_plants.csv"
 
-# ----------------------------- Helpers -----------------------------
+# Timezone for processing date & filenames (Tbilisi)
+TZ = ZoneInfo("Asia/Tbilisi")
+RUN_DT = datetime.now(TZ)
+RUN_WEEKDAY = RUN_DT.weekday() + 1  # Mon=1..Sun=7
+RUN_DATE_STR = RUN_DT.strftime("%Y-%m-%d")
 
+# ----------------------------- Helpers -----------------------------
 def clean_ean(x):
     if pd.isna(x):
         return np.nan
@@ -69,6 +74,7 @@ def load_table(uploaded=None, default_path: Path=None, required=False, label="fi
         if name.endswith((".xlsx",".xlsm",".xltx",".xltm")):
             return pd.read_excel(bio, dtype=str, keep_default_na=False)
         if name.endswith(".xls"):
+            # xlrd needed for legacy .xls; if missing, this will error.
             return pd.read_excel(bio, dtype=str, keep_default_na=False, engine="xlrd")
         if name.endswith(".csv"):
             try:
@@ -118,13 +124,13 @@ def to_excel_bytes_price_qty(df_dict, price_col, qty_col, text_cols):
             price_fmt = wb.add_format({"num_format": "0.00"})
             qty_fmt = wb.add_format({"num_format": "0"})
 
-            # Force TEXT columns
+            # Force TEXT columns (e.g., EAN)
             for col in text_cols:
                 if col in df_out.columns:
                     j = df_out.columns.get_loc(col)
                     ws.set_column(j, j, None, text_fmt)
                     vals = df_out[col].astype(str)
-                    for i, val in enumerate(vals, start=1):
+                    for i, val in enumerate(vals, start=1):  # +1 to skip header
                         ws.write_string(i, j, val, text_fmt)
 
             # Write PRICE as NUMBER (2 decimals)
@@ -160,19 +166,24 @@ def to_excel_bytes_price_qty(df_dict, price_col, qty_col, text_cols):
     out.seek(0)
     return out.getvalue()
 
-# ----------------------------- Constants -----------------------------
+def to_excel_bytes_simple(df_dict):
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        for sheet, df in df_dict.items():
+            df.to_excel(writer, index=False, sheet_name=sheet)
+    out.seek(0)
+    return out.getvalue()
 
-ORD_DATE_COL = "Дата документа"
-ORD_PO_COL = "Документ закупки"
-ORD_SUPP_COL = "Поставщик/завод-поставщик"
+# ----------------------------- Column names -----------------------------
+ORD_DATE_COL  = "Дата документа"
+ORD_PO_COL    = "Документ закупки"
+ORD_SUPP_COL  = "Поставщик/завод-поставщик"
 ORD_PLANT_COL = "Завод"
-ORD_ADDR_COL = "მაღაზიის მისამართი"
-ORD_EAN_COL = "Код EAN/UPC"
-ORD_TEXT_COL = "Краткий текст"
-ORD_QTY_COL = "Количество заказа"
+ORD_ADDR_COL  = "მაღაზიის მისამართი"
+ORD_EAN_COL   = "Код EAN/UPC"
+ORD_TEXT_COL  = "Краткий текст"
+ORD_QTY_COL   = "Количество заказа"
 ORD_PRICE_COL = "ღირებულება"
-
-run_weekday = int(datetime.now().weekday()) + 1  # Mon=1..Sun=7, from processing date
 
 # ----------------------------- Inputs -----------------------------
 st.subheader("Upload daily order (client file — unchanged)")
@@ -235,7 +246,7 @@ if st.button("Process"):
 
     # Merge and filter wrong-day (Tbilisi-range only)
     orders = orders.merge(sch, on="plant_str", how="left")
-    wrong_mask = (orders["is_tbilisi_range"]) & (~orders["allowed_weekday"].isna()) & (orders["allowed_weekday"] != run_weekday)
+    wrong_mask = (orders["is_tbilisi_range"]) & (~orders["allowed_weekday"].isna()) & (orders["allowed_weekday"] != RUN_WEEKDAY)
     wrong_day_orders = orders[wrong_mask].copy()
     clean_orders = orders[~wrong_mask].copy()
 
@@ -259,21 +270,41 @@ if st.button("Process"):
     keep = [c for i, c in enumerate(erp_view.columns.tolist()) if i not in drop_positions]
     erp_final = erp_view[keep].copy()
 
+    # ---- Missed shops (scheduled today in Tbilisi range but did NOT order) ----
+    todays_plants = set(sch.loc[sch["allowed_weekday"] == RUN_WEEKDAY, "plant_str"])
+    todays_tbilisi_plants = todays_plants.intersection(plant_set)
+    ordered_today_plants = set(clean_orders["plant_str"].dropna().unique())
+    missed_plants = sorted(list(todays_tbilisi_plants - ordered_today_plants))
+    missed_df = pd.DataFrame({
+        "plant": missed_plants,
+        "shop_code": [f"#{p}" for p in missed_plants],
+    })
+
     # Metrics
-    m1, m2, m3 = st.columns(3)
-    with m1: st.metric("Detected weekday", run_weekday)
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.metric("Detected weekday", RUN_WEEKDAY)
     with m2: st.metric("Wrong-day rows", len(wrong_day_orders))
     with m3: st.metric("Rows for ERP", len(erp_final))
+    with m4: st.metric("Missed shops", len(missed_df))
 
     st.subheader("ERP Upload (first 20)")
     st.dataframe(erp_final.head(20))
     st.subheader("Wrong-day Orders (first 20)")
     st.dataframe(wrong_day_orders.head(20))
+    st.subheader("Missed Shops (first 20)")
+    st.dataframe(missed_df.head(20))
 
     # Downloads: PRICE number (0.00), QTY number (0), EAN text
     text_cols = [ORD_EAN_COL]  # keep EAN as TEXT
     erp_bytes = to_excel_bytes_price_qty({"ERP_Upload": erp_final}, price_col=ORD_PRICE_COL, qty_col=ORD_QTY_COL, text_cols=text_cols)
     wrong_bytes = to_excel_bytes_price_qty({"WrongDay": wrong_day_orders}, price_col=ORD_PRICE_COL, qty_col=ORD_QTY_COL, text_cols=text_cols)
+    missed_bytes = to_excel_bytes_simple({"Missed": missed_df})
 
-    st.download_button("Download ERP Upload (XLSX)", erp_bytes, file_name="orders_for_erp.xlsx")
-    st.download_button("Download Wrong-day Orders (XLSX)", wrong_bytes, file_name="wrong_day_orders.xlsx")
+    # Filenames (Georgian) with current date in Asia/Tbilisi
+    fname_erp = f"ნიკორა, რეგულარ, {RUN_DATE_STR}.xlsx"
+    fname_wrong = f"ნიკორა, წაშლილი, {RUN_DATE_STR}.xlsx"
+    fname_missed = f"ნიკორა, არ შეუკვეთა, {RUN_DATE_STR}.xlsx"
+
+    st.download_button("Download ERP Upload (XLSX)", erp_bytes, file_name=fname_erp)
+    st.download_button("Download Wrong-day Orders (XLSX)", wrong_bytes, file_name=fname_wrong)
+    st.download_button("Download Missed Shops (XLSX)", missed_bytes, file_name=fname_missed)
