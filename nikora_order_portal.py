@@ -266,7 +266,7 @@ if st.button("Process"):
         erp_view[f"_extra_{erp_view.shape[1]+1}"] = ""
 
     # Delete columns 1, 2, 5 (1-based) ONLY — keep column 7
-    drop_positions = [0, 1, 4]  # zero-based
+    drop_positions = [0, 4]  # zero-based
     keep = [c for i, c in enumerate(erp_view.columns.tolist()) if i not in drop_positions]
     erp_final = erp_view[keep].copy()
 
