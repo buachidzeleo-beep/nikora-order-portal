@@ -1,3 +1,4 @@
+
 import io
 import re
 from datetime import datetime
@@ -266,9 +267,14 @@ if st.button("Process"):
         erp_view[f"_extra_{erp_view.shape[1]+1}"] = ""
 
     # Delete columns 1, 2, 5 (1-based) ONLY — keep column 7
-    drop_positions = [0, 4]  # zero-based
+    drop_positions = [0, 4]  # zero-based (1st and 5th)
     keep = [c for i, c in enumerate(erp_view.columns.tolist()) if i not in drop_positions]
     erp_final = erp_view[keep].copy()
+
+    # >>> NEW: move first column to the end in the final ERP view <<<
+    if len(erp_final.columns) > 1:
+        cols = erp_final.columns.tolist()
+        erp_final = erp_final[cols[1:] + [cols[0]]]
 
     # ---- Missed shops (scheduled today in Tbilisi range but did NOT order) ----
     todays_plants = set(sch.loc[sch["allowed_weekday"] == RUN_WEEKDAY, "plant_str"])
@@ -308,3 +314,4 @@ if st.button("Process"):
     st.download_button("Download ERP Upload (XLSX)", erp_bytes, file_name=fname_erp)
     st.download_button("Download Wrong-day Orders (XLSX)", wrong_bytes, file_name=fname_wrong)
     st.download_button("Download Missed Shops (XLSX)", missed_bytes, file_name=fname_missed)
+
